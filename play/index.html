@@ -96,10 +96,6 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--cyan); outline-
 .toast{position:fixed; left:50%; bottom:28px; transform:translateX(-50%); background:#0d3a85; border:1px solid var(--cyan); padding:10px 16px; border-radius:12px; font-weight:800; font-size:14px; z-index:20}
 .toast[hidden]{display:none!important}
 </style>
-<style>html{background:#050f2b}body{padding-top:max(10px,env(safe-area-inset-top,0px));padding-bottom:max(10px,env(safe-area-inset-bottom,0px))}[hidden]{display:none!important}</style>
-</head>
-<body>
-
 
 <div class="app">
   <!-- START -->
@@ -118,7 +114,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--cyan); outline-
       <button id="play" class="cta" type="button">Play</button>
     </div>
     <div class="board">
-      <div class="bh"><h3>Top 10</h3><small>Resets in <span id="cd1">--:--:--</span></small></div>
+      <div class="bh"><h3 id="bt1">Top 10</h3><small>Resets in <span id="cd1">--:--:--</span></small></div>
       <div id="b1"></div>
     </div>
     <div class="foot">60 seconds. Catch the dust, dodge the rest.<br>Illustrative simulation of a bag filter.</div>
@@ -142,7 +138,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--cyan); outline-
       <button id="change" class="sub" type="button">Change robot</button>
     </div>
     <div class="board">
-      <div class="bh"><h3>Top 10</h3><small>Resets in <span id="cd2">--:--:--</span></small></div>
+      <div class="bh"><h3 id="bt2">Top 10</h3><small>Resets in <span id="cd2">--:--:--</span></small></div>
       <div id="b2"></div>
     </div>
   </section>
@@ -221,18 +217,36 @@ function prevLoop(ts){
   requestAnimationFrame(prevLoop);
 }
 
-/* ---------- leaderboard (per device, 8-hour windows) ---------- */
-var H8=8*3600*1000;
-function winStart(ts){var d=new Date(ts);d.setMinutes(0,0,0);d.setHours(Math.floor(d.getHours()/8)*8);return d.getTime()}
-function winEnd(ts){var d=new Date(winStart(ts));d.setHours(d.getHours()+8);return d.getTime()}
+/* ---------- leaderboard (shared via Firebase Realtime Database, 8-hour windows) ---------- */
+var DB_URL='https://dust-rush-default-rtdb.firebaseio.com';   /* paste the Firebase Realtime Database URL between the quotes, no trailing slash */
+var H8=8*3600*1000,TZ=3*3600*1000;   /* windows start at 00:00, 08:00, 16:00 Riyadh time, the same on every phone */
+function winStart(ts){return Math.floor((ts+TZ)/H8)*H8-TZ}
+function winEnd(ts){return winStart(ts)+H8}
 function allEntries(){var e=jget('dr_board',[]);return Array.isArray(e)?e:[]}
 function saveEntry(en){
   var now=Date.now();var list=allEntries().filter(function(x){return x.ws>=winStart(now)-H8*2});
   list.push(en);if(list.length>300)list=list.slice(-300);sset('dr_board',JSON.stringify(list));
 }
+var remote={},remoteOk=false;
+function entriesFor(ws){return (DB_URL&&remoteOk&&remote[ws])?remote[ws]:allEntries().filter(function(e){return e.ws===ws})}
+function fetchBoard(cb){
+  if(!DB_URL){if(cb)cb();return}
+  var ws=winStart(Date.now()),pend=2,okc=0;
+  [ws,ws-H8].forEach(function(w){
+    fetch(DB_URL+'/scores.json?orderBy=%22ws%22&equalTo='+w).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(d){
+      var a=[];if(d&&typeof d==='object')Object.keys(d).forEach(function(k){var e=d[k];if(e&&typeof e.name==='string'&&typeof e.score==='number'&&typeof e.ts==='number')a.push(e)});
+      remote[w]=a;okc++}).catch(function(){}).then(function(){if(--pend===0){remoteOk=(okc===2);setLive();if(cb)cb()}});
+  });
+}
+function postEntry(en,cb){
+  if(!DB_URL){if(cb)cb();return}
+  var body=JSON.stringify({name:en.name,score:en.score,win:!!en.win,k:en.cfg.k,ts:en.ts,ws:en.ws});
+  fetch(DB_URL+'/scores.json',{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){}).then(function(){if(cb)cb()});
+}
+function setLive(){var t=(DB_URL&&remoteOk)?'Top 10 \u00b7 live':'Top 10';var a=$('bt1'),b=$('bt2');if(a)a.textContent=t;if(b)b.textContent=t}
 function topFor(ws){
   var best={};
-  allEntries().forEach(function(e){if(e.ws!==ws)return;var k=String(e.name).trim().toLowerCase();if(!best[k]||e.score>best[k].score||(e.score===best[k].score&&e.ts<best[k].ts))best[k]=e});
+  entriesFor(ws).forEach(function(e){var k=String(e.name).trim().toLowerCase();if(!best[k]||e.score>best[k].score||(e.score===best[k].score&&e.ts<best[k].ts))best[k]=e});
   return Object.keys(best).map(function(k){return best[k]}).sort(function(a,b){return b.score-a.score||a.ts-b.ts});
 }
 function renderBoard(el,hlTs){
@@ -243,20 +257,21 @@ function renderBoard(el,hlTs){
     var li=document.createElement('div');li.className='li'+(hlTs&&e.ts===hlTs?' me':'');
     var rk=document.createElement('div');rk.className='rk';rk.textContent=i+1;
     var cv=document.createElement('canvas');cv.width=68;cv.height=68;
-    if(ready)drawSprite(cv.getContext('2d'),34,37,14,(e.cfg&&typeof e.cfg.k==='number'&&e.cfg.k<SPR.length)?e.cfg.k:0,{});
+    var kk=(e.cfg&&typeof e.cfg.k==='number')?e.cfg.k:(typeof e.k==='number'?e.k:0);if(!(kk>=0&&kk<SPR.length))kk=0;
+    if(ready)drawSprite(cv.getContext('2d'),34,37,14,kk,{});
     var nm=document.createElement('div');nm.className='nm';nm.textContent=e.name;
     var sc=document.createElement('div');sc.className='sc';sc.textContent=e.score;
     li.appendChild(rk);li.appendChild(cv);li.appendChild(nm);li.appendChild(sc);el.appendChild(li);
   });
   var prev=topFor(ws-H8);
-  if(prev.length){var p=document.createElement('div');p.className='prev-win';p.textContent='Previous 8 hours winner: '+prev[0].name+' · '+prev[0].score;el.appendChild(p)}
+  if(prev.length){var p=document.createElement('div');p.className='prev-win';p.textContent='Previous 8 hours winner: '+prev[0].name+' \u00b7 '+prev[0].score;el.appendChild(p)}
 }
 function rankOf(ts){var ws=winStart(Date.now());var t=topFor(ws);for(var i=0;i<t.length;i++){if(t[i].ts===ts)return i+1}
   return null}
 function fmt(ms){ms=Math.max(0,ms);var s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(x<10?'0':'')+x}
 function tick(){
   var left=fmt(winEnd(Date.now())-Date.now());$('cd1').textContent=left;$('cd2').textContent=left;
-  if(winStart(Date.now())!==lastWs){lastWs=winStart(Date.now());renderBoard($('b1'));if($('s-end').classList.contains('on'))renderBoard($('b2'),lastTs)}
+  if(winStart(Date.now())!==lastWs){lastWs=winStart(Date.now());fetchBoard(function(){renderBoard($('b1'));if($('s-end').classList.contains('on'))renderBoard($('b2'),lastTs)})}
 }
 var lastWs=winStart(Date.now()),lastTs=0;
 
@@ -532,6 +547,7 @@ function endGame(win){
   var ts=Date.now();lastTs=ts;
   var en={name:playerName,score:g.score,win:!!win,cfg:{k:cfg.k},ts:ts,ws:winStart(ts)};
   saveEntry(en);
+  postEntry(en,function(){fetchBoard(function(){var rk2=rankOf(ts);$('r-rank').textContent=rk2?('#'+rk2+' on this 8-hour board'):'';renderBoard($('b2'),ts)})});
   sfx(win?'win':'lose');vib(win?[40,40,40]:200);
   // result screen
   var st=$('r-state');st.className='chip-state '+(win?'win':'lose');st.textContent=win?'PLANT SAVED':'PLANT STOPPED';
@@ -569,14 +585,17 @@ $('again').addEventListener('click',function(){startGame()});
 $('change').addEventListener('click',function(){show('s-start')});
 $('snd').addEventListener('click',function(){soundOn=!soundOn;sset('dr_snd',soundOn?'on':'off');setSndLabel();initAudio();sfx('tap')});
 var bt=0,btT=0;
-$('brand').addEventListener('click',function(){var n=Date.now();if(n-btT>4000)bt=0;btT=n;bt++;if(bt>=7){bt=0;sset('dr_board','[]');renderBoard($('b1'));toast('Top 10 cleared')}});
+$('brand').addEventListener('click',function(){var n=Date.now();if(n-btT>4000)bt=0;btT=n;bt++;if(bt>=7){bt=0;sset('dr_board','[]');renderBoard($('b1'));toast('Scores cleared on this device')}});
 window.addEventListener('resize',function(){if(G&&!G.ended){sizeGame()}});
 
 $('name').value=sget('dr_name')||'';
 loadSprites();buildOpts();setSndLabel();bindGame();renderBoard($('b1'));tick();setInterval(tick,1000);
+fetchBoard(function(){renderBoard($('b1'))});
+setInterval(function(){if(document.hidden||$('s-game').classList.contains('on'))return;fetchBoard(function(){if($('s-start').classList.contains('on'))renderBoard($('b1'));else if($('s-end').classList.contains('on'))renderBoard($('b2'),lastTs)})},15000);
 requestAnimationFrame(prevLoop);
 })();
 </script>
 
+<style>html{background:#050f2b}body{padding-top:max(10px,env(safe-area-inset-top,0px));padding-bottom:max(10px,env(safe-area-inset-bottom,0px))}[hidden]{display:none!important}</style>
 </body>
 </html>
