@@ -228,22 +228,26 @@ function saveEntry(en){
   list.push(en);if(list.length>300)list=list.slice(-300);sset('dr_board',JSON.stringify(list));
 }
 var remote={},remoteOk=false;
-function entriesFor(ws){return (DB_URL&&remoteOk&&remote[ws])?remote[ws]:allEntries().filter(function(e){return e.ws===ws})}
+var dbg='';
+function entriesFor(ws){
+  var loc=allEntries().filter(function(e){return e.ws===ws});
+  if(!(DB_URL&&remote[ws]))return loc;
+  var seen={},out=[];remote[ws].concat(loc).forEach(function(e){var k=e.name+'|'+e.ts;if(!seen[k]){seen[k]=1;out.push(e)}});return out}
 function fetchBoard(cb){
   if(!DB_URL){if(cb)cb();return}
   var ws=winStart(Date.now()),pend=2,okc=0;
   [ws,ws-H8].forEach(function(w){
-    fetch(DB_URL+'/scores.json?orderBy=%22ws%22&equalTo='+w).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(d){
+    fetch(DB_URL+'/scores.json?orderBy=%22ws%22&equalTo='+w).then(function(r){if(!r.ok){dbg='GET '+r.status;throw 0}return r.json()}).then(function(d){
       var a=[];if(d&&typeof d==='object')Object.keys(d).forEach(function(k){var e=d[k];if(e&&typeof e.name==='string'&&typeof e.score==='number'&&typeof e.ts==='number')a.push(e)});
-      remote[w]=a;okc++}).catch(function(){}).then(function(){if(--pend===0){remoteOk=(okc===2);setLive();if(cb)cb()}});
+      remote[w]=a;okc++}).catch(function(e){if(!dbg)dbg='GET failed'}).then(function(){if(--pend===0){remoteOk=(okc===2);setLive();if(cb)cb()}});
   });
 }
 function postEntry(en,cb){
   if(!DB_URL){if(cb)cb();return}
   var body=JSON.stringify({name:en.name,score:en.score,win:!!en.win,k:en.cfg.k,ts:en.ts,ws:en.ws});
-  fetch(DB_URL+'/scores.json',{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){}).then(function(){if(cb)cb()});
+  fetch(DB_URL+'/scores.json',{method:'POST',headers:{'Content-Type':'application/json'},body:body}).then(function(r){if(!r.ok){dbg='POST '+r.status;setLive()}else{dbg=''}}).catch(function(){dbg='POST failed';setLive()}).then(function(){if(cb)cb()});
 }
-function setLive(){var t=(DB_URL&&remoteOk)?'Top 10 \u00b7 live':'Top 10';var a=$('bt1'),b=$('bt2');if(a)a.textContent=t;if(b)b.textContent=t}
+function setLive(){var t=!DB_URL?'Top 10':(remoteOk&&!dbg)?'Top 10 \u00b7 live':'Top 10 \u00b7 offline'+(dbg?' ('+dbg+')':'');var a=$('bt1'),b=$('bt2');if(a)a.textContent=t;if(b)b.textContent=t}
 function topFor(ws){
   var best={};
   entriesFor(ws).forEach(function(e){var k=String(e.name).trim().toLowerCase();if(!best[k]||e.score>best[k].score||(e.score===best[k].score&&e.ts<best[k].ts))best[k]=e});
